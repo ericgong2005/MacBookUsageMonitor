@@ -160,11 +160,11 @@ DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.sy
     updateScreenState(.wake)
 }
 
-// Write to files
 func writeAll() {
     // Battery
     batteryQ.sync {
         guard !batteryEntries.isEmpty else { return }
+
         let joined = batteryEntries.map { entry in
             "\(entry.time),\(entry.state.max),\(entry.state.charge),\(entry.state.cycles),\(entry.state.ac)"
         }.joined(separator: "\n") + "\n"
@@ -173,6 +173,7 @@ func writeAll() {
             if let fh = try? FileHandle(forWritingTo: batteryCSV) {
                 fh.seekToEndOfFile()
                 fh.write(data)
+                fh.synchronizeFile()  // ensure disk flush
                 try? fh.close()
             } else {
                 try? data.write(to: batteryCSV, options: .atomic)
@@ -194,6 +195,7 @@ func writeAll() {
             if let fh = try? FileHandle(forWritingTo: screenCSV) {
                 fh.seekToEndOfFile()
                 fh.write(data)
+                fh.synchronizeFile()
                 try? fh.close()
             } else {
                 try? data.write(to: screenCSV, options: .atomic)
@@ -210,11 +212,16 @@ func writeAll() {
             try? data.write(to: keyFreqJSON, options: .atomic)
         }
     }
+
+    // Give filesystem a moment to flush
+    Thread.sleep(forTimeInterval: 0.5)
 }
 
 // Termination handlers
 let workspaceCenter = NSWorkspace.shared.notificationCenter
 workspaceCenter.addObserver(forName: NSWorkspace.willSleepNotification,
+                            object: nil, queue: nil) { _ in writeAll() }
+workspaceCenter.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification,
                             object: nil, queue: nil) { _ in writeAll() }
 workspaceCenter.addObserver(forName: NSWorkspace.willPowerOffNotification,
                             object: nil, queue: nil) { _ in writeAll() }
