@@ -241,11 +241,11 @@ startKeyMonitor()
 // 5min battery sampling
 Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in logBattery() }
 
-// 15 min screen check
-Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { _ in updateScreenState(.on) }
+// 5 min screen check
+Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in updateScreenState(.on) }
 
-// 30 min write trigger
-Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { _ in writeAll() }
+// 10 min write trigger
+Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { _ in writeAll() }
 
 RunLoop.main.run()
 
