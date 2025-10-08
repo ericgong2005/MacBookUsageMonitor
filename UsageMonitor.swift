@@ -142,24 +142,7 @@ func updateScreenState(_ newState: ScreenState) {
     }
 }
 
-// Notifications
-DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.screenIsLocked"),
-                                                    object: nil, queue: nil) { _ in
-    updateScreenState(.locked)
-}
-DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.screenIsUnlocked"),
-                                                    object: nil, queue: nil) { _ in
-    updateScreenState(.unlocked)
-}
-DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.system.sleep"),
-                                                    object: nil, queue: nil) { _ in
-    updateScreenState(.sleep)
-}
-DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.system.woke"),
-                                                    object: nil, queue: nil) { _ in
-    updateScreenState(.wake)
-}
-
+// Save to files
 func writeAll() {
     // Battery
     batteryQ.sync {
@@ -212,9 +195,24 @@ func writeAll() {
             try? data.write(to: keyFreqJSON, options: .atomic)
         }
     }
+}
 
-    // Give filesystem a moment to flush
-    Thread.sleep(forTimeInterval: 0.5)
+// Notifications
+DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.screenIsLocked"),
+                                                    object: nil, queue: nil) { _ in
+    updateScreenState(.locked); writeAll()
+}
+DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.screenIsUnlocked"),
+                                                    object: nil, queue: nil) { _ in
+    updateScreenState(.unlocked)
+}
+DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.system.sleep"),
+                                                    object: nil, queue: nil) { _ in
+    updateScreenState(.sleep)
+}
+DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.system.woke"),
+                                                    object: nil, queue: nil) { _ in
+    updateScreenState(.wake)
 }
 
 // Termination handlers

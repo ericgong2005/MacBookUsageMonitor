@@ -18,12 +18,10 @@
 
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>
-    <key>LaunchOnlyOnce</key>
-    <true/>
-
+    
     <key>StandardOutPath</key>
-    <string>/Users/Ericgong/Library/UsageMonitor/myscript.out</string>
+    <string>/Users/Ericgong/Library/UsageMonitor/UsageMonitor.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/Ericgong/Library/UsageMonitor/myscript.err</string>
+    <string>/Users/Ericgong/Library/UsageMonitor/UsageMonitor.err</string>
 </dict>
 </plist>
