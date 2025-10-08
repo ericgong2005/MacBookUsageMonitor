@@ -1,7 +1,7 @@
 # MacBook Usage Monitor
 
 ## Motivation
-The purpose of this code is to Allow one to track various hardward utilization metrics for their MacBook. In particular, this code tracks screen time by logging all sleep/wake and screen lock/unlock events. In addition it tracks battery usage by periodically logging the current battery percentage, the battery health, and whether the MacBook is currently charging. Finally, the code also tracks keystrokes, storing the frequency of usage for each key.
+The purpose of this code is to Allow one to track various hardward utilization metrics for their MacBook. In particular, this code tracks screen time by logging all sleep/wake and screen lock/unlock events. In addition it tracks battery usage by periodically logging the current battery percentage, the battery health, the current number of charge cycles, and whether the MacBook is currently charging. Finally, the code also tracks keystrokes, storing the frequency of usage for each key.
 
 In particular, battery usage metrics are queried once every 5 minutes, while keystrokes and screen activity are monitored on event. The results are written to files every 30 minutes, or whenever the code is terminated, or when the MacBook is put to sleep.
 
