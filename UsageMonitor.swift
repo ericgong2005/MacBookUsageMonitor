@@ -3,12 +3,54 @@ import Foundation
 import Cocoa
 import IOKit.ps
 import IOKit
+import Darwin
 
 // Compile with swiftc UsageMonitor.swift -o UsageMonitor
+
+//Concurrency Lock
+final class FileLock {
+    private let url: URL
+    private var fd: Int32 = -1
+
+    init(_ url: URL) { self.url = url }
+
+    func lock() throws {
+        if fd == -1 {
+            fd = open(url.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            if fd == -1 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        }
+
+        while true {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                return
+            }
+            let e = errno
+            if e == EINTR { continue }
+            if e == EWOULDBLOCK {
+                Thread.sleep(forTimeInterval: 10)
+                continue
+            }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(e))
+        }
+    }
+
+    func unlock() {
+        if fd != -1 {
+            _ = flock(fd, LOCK_UN)
+            close(fd)
+            fd = -1
+        }
+    }
+
+    deinit { unlock() }
+}
 
 // Configuration
 let LOG_DIR = URL(fileURLWithPath: "/Users/Ericgong/Library/UsageMonitor")
 try? FileManager.default.createDirectory(at: LOG_DIR, withIntermediateDirectories: true)
+
+let LOCK_FILE = LOG_DIR.appendingPathComponent("UsageMonitor.lock")
+let GlobalLock = FileLock(LOCK_FILE)
 
 let batteryCSV = LOG_DIR.appendingPathComponent("battery_log.csv")
 let keyFreqJSON = LOG_DIR.appendingPathComponent("key_frequency.json")
@@ -88,33 +130,32 @@ var keyFreq: [String:Int] =
 let keyQ = DispatchQueue(label: "keyQ")
 
 func startKeyMonitor() {
-    let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
-    guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
-                                      place: .headInsertEventTap,
-                                      options: .defaultTap,
-                                      eventsOfInterest: CGEventMask(mask),
-                                      callback: { _, t, e, _ in
-        keyQ.async {
-            if t == .keyDown {
+    let mask: CGEventMask =
+        (CGEventMask(1) << CGEventMask(CGEventType.keyDown.rawValue)) |
+        (CGEventMask(1) << CGEventMask(CGEventType.flagsChanged.rawValue))
+
+    guard let tap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap,
+        place: .headInsertEventTap,
+        options: .defaultTap,
+        eventsOfInterest: mask,
+        callback: { _, t, e, _ in
+            if t == .keyDown || t == .flagsChanged {
                 let code = UInt16(truncatingIfNeeded: e.getIntegerValueField(.keyboardEventKeycode))
-                keyFreq[String(code), default: 0] += 1
-            } else if t == .flagsChanged {
-                let f = e.flags
-                if f.contains(.maskCommand)   { keyFreq["cmd", default: 0] += 1 }
-                if f.contains(.maskAlternate) { keyFreq["opt", default: 0] += 1 }
-                if f.contains(.maskShift)     { keyFreq["shift", default: 0] += 1 }
-                if f.contains(.maskControl)   { keyFreq["ctrl", default: 0] += 1 }
+                keyQ.async {
+                    keyFreq[String(code), default: 0] += 1
+                }
             }
-        }
-        return Unmanaged.passUnretained(e)
-    }, userInfo: nil) else {
+            return Unmanaged.passUnretained(e)
+        },
+        userInfo: nil
+    ) else {
         print("Need Accessibility permission")
         return
     }
 
-    CFRunLoopAddSource(CFRunLoopGetCurrent(),
-                       CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0),
-                       .commonModes)
+    let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
     CGEvent.tapEnable(tap: tap, enable: true)
 }
 
@@ -123,8 +164,6 @@ enum ScreenState: String {
     case on = "ScreenOn"
     case locked = "ScreenLocked"
     case unlocked = "ScreenUnlocked"
-    case sleep = "SystemSleep"
-    case wake = "SystemWake"
     case started = "ScriptStarted"
 }
 
@@ -144,56 +183,64 @@ func updateScreenState(_ newState: ScreenState) {
 
 // Save to files
 func writeAll() {
-    // Battery
-    batteryQ.sync {
-        guard !batteryEntries.isEmpty else { return }
+    do {
+        try GlobalLock.lock()
+        defer { GlobalLock.unlock() }
 
-        let joined = batteryEntries.map { entry in
-            "\(entry.time),\(entry.state.max),\(entry.state.charge),\(entry.state.cycles),\(entry.state.ac)"
-        }.joined(separator: "\n") + "\n"
+        // Battery
+        batteryQ.sync {
+            guard !batteryEntries.isEmpty else { return }
 
-        if let data = joined.data(using: .utf8) {
-            if let fh = try? FileHandle(forWritingTo: batteryCSV) {
-                fh.seekToEndOfFile()
-                fh.write(data)
-                fh.synchronizeFile()  // ensure disk flush
-                try? fh.close()
-            } else {
-                try? data.write(to: batteryCSV, options: .atomic)
+            let joined = batteryEntries.map { entry in
+                "\(entry.time),\(entry.state.max),\(entry.state.charge),\(entry.state.cycles),\(entry.state.ac)"
+            }.joined(separator: "\n") + "\n"
+
+            if let data = joined.data(using: .utf8) {
+                if let fh = try? FileHandle(forWritingTo: batteryCSV) {
+                    fh.seekToEndOfFile()
+                    fh.write(data)
+                    fh.synchronizeFile()  // ensure disk flush
+                    try? fh.close()
+                } else {
+                    try? data.write(to: batteryCSV, options: .atomic)
+                }
+            }
+
+            batteryEntries.removeAll(keepingCapacity: true)
+        }
+
+        // Screen
+        screenQ.sync {
+            guard !screenEvents.isEmpty else { return }
+
+            let joined = screenEvents.map { e in
+                "\(e.time),\(e.state.rawValue)"
+            }.joined(separator: "\n") + "\n"
+
+            if let data = joined.data(using: .utf8) {
+                if let fh = try? FileHandle(forWritingTo: screenCSV) {
+                    fh.seekToEndOfFile()
+                    fh.write(data)
+                    fh.synchronizeFile()
+                    try? fh.close()
+                } else {
+                    try? data.write(to: screenCSV, options: .atomic)
+                }
+            }
+
+            screenEvents.removeAll(keepingCapacity: true)
+        }
+
+        // Keystroke
+        keyQ.sync {
+            if let data = try? JSONSerialization.data(withJSONObject: keyFreq,
+                                                    options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: keyFreqJSON, options: .atomic)
             }
         }
-
-        batteryEntries.removeAll(keepingCapacity: true)
-    }
-
-    // Screen
-    screenQ.sync {
-        guard !screenEvents.isEmpty else { return }
-
-        let joined = screenEvents.map { e in
-            "\(e.time),\(e.state.rawValue)"
-        }.joined(separator: "\n") + "\n"
-
-        if let data = joined.data(using: .utf8) {
-            if let fh = try? FileHandle(forWritingTo: screenCSV) {
-                fh.seekToEndOfFile()
-                fh.write(data)
-                fh.synchronizeFile()
-                try? fh.close()
-            } else {
-                try? data.write(to: screenCSV, options: .atomic)
-            }
-        }
-
-        screenEvents.removeAll(keepingCapacity: true)
-    }
-
-    // Keystroke
-    keyQ.sync {
-        if let data = try? JSONSerialization.data(withJSONObject: keyFreq,
-                                                  options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: keyFreqJSON, options: .atomic)
-        }
+    } catch {
+        fputs("Failed to acquire lock: \(error)\n", stderr)
+        return
     }
 }
 
@@ -206,14 +253,6 @@ DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.sc
                                                     object: nil, queue: nil) { _ in
     updateScreenState(.unlocked)
 }
-DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.system.sleep"),
-                                                    object: nil, queue: nil) { _ in
-    updateScreenState(.sleep)
-}
-DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.system.woke"),
-                                                    object: nil, queue: nil) { _ in
-    updateScreenState(.wake)
-}
 
 // Termination handlers
 let workspaceCenter = NSWorkspace.shared.notificationCenter
@@ -225,8 +264,22 @@ workspaceCenter.addObserver(forName: NSWorkspace.willPowerOffNotification,
                             object: nil, queue: nil) { _ in writeAll() }
 
 atexit { writeAll() }
-signal(SIGTERM) { _ in writeAll(); exit(0) }
-signal(SIGINT)  { _ in writeAll(); exit(0) }
+signal(SIGTERM, SIG_IGN)
+signal(SIGINT,  SIG_IGN)
+
+let termSrc = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+termSrc.setEventHandler {
+    writeAll() 
+    exit(0)
+}
+termSrc.resume()
+
+let intSrc = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+intSrc.setEventHandler {
+    writeAll()
+    exit(0)
+}
+intSrc.resume()
 
 // Begin Execution
 createFilesAndHeadersOnce()
@@ -236,8 +289,8 @@ updateScreenState(.started)
 logBattery()
 startKeyMonitor()
 
-// 5min battery sampling
-Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in logBattery() }
+// 1min battery sampling
+Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in logBattery() }
 
 // 5 min screen check
 Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in updateScreenState(.on) }

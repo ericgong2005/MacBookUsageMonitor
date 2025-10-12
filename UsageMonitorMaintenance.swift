@@ -4,6 +4,44 @@ import Foundation
 
 // Compile with: swiftc UsageMonitorMaintenance.swift -o UsageMonitorMaintenance
 
+// Concurrency Lock
+final class FileLock {
+    private let url: URL
+    private var fd: Int32 = -1
+
+    init(_ url: URL) { self.url = url }
+
+    func lock() throws {
+        if fd == -1 {
+            fd = open(url.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            if fd == -1 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        }
+
+        while true {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                return
+            }
+            let e = errno
+            if e == EINTR { continue }
+            if e == EWOULDBLOCK {
+                Thread.sleep(forTimeInterval: 10)
+                continue
+            }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(e))
+        }
+    }
+
+    func unlock() {
+        if fd != -1 {
+            _ = flock(fd, LOCK_UN)
+            close(fd)
+            fd = -1
+        }
+    }
+
+    deinit { unlock() }
+}
+
 // Configuration
 let fileManager = FileManager.default
 let baseDir = NSString(string: "/Users/Ericgong/Library/UsageMonitor").expandingTildeInPath
@@ -15,6 +53,9 @@ let day = calendar.component(.day, from: todayDate)
 let dateFormatter = DateFormatter()
 dateFormatter.dateFormat = "yyyy-MM-dd"
 let todayString = dateFormatter.string(from: todayDate)
+
+let lockURL = URL(fileURLWithPath: baseDir).appendingPathComponent("UsageMonitor.lock")
+let GlobalLock = FileLock(lockURL)
 
 func log(_ msg: String) {
     let timestamp = ISO8601DateFormatter().string(from: Date())
@@ -120,43 +161,51 @@ if !isUpdateDay() {
 
 log("Starting UsageMonitor maintenance for \(todayString)")
 
-let batteryPath = "\(baseDir)/battery_log.csv"
-let keyFreqPath = "\(baseDir)/key_frequency.json"
-let screenPath = "\(baseDir)/screen_log.csv"
+do {
+    try GlobalLock.lock()
+    defer { GlobalLock.unlock() }
 
-waitIfRecentlyUpdated(filePath: screenPath)
+    let batteryPath = "\(baseDir)/battery_log.csv"
+    let keyFreqPath = "\(baseDir)/key_frequency.json"
+    let screenPath = "\(baseDir)/screen_log.csv"
 
-// Clean CSVs
-let batteryTemp = "\(logDir)/battery_clean.csv"
-let screenTemp = "\(logDir)/screen_clean.csv"
+    waitIfRecentlyUpdated(filePath: screenPath)
 
-try? cleanCSV(inputPath: batteryPath, outputPath: batteryTemp)
-try? cleanCSV(inputPath: screenPath, outputPath: screenTemp)
+    // Clean CSVs
+    let batteryTemp = "\(logDir)/battery_clean.csv"
+    let screenTemp = "\(logDir)/screen_clean.csv"
 
-// Atomically replace originals
-_ = try? fileManager.replaceItemAt(URL(fileURLWithPath: batteryPath),
-                                   withItemAt: URL(fileURLWithPath: batteryTemp))
-_ = try? fileManager.replaceItemAt(URL(fileURLWithPath: screenPath),
-                                   withItemAt: URL(fileURLWithPath: screenTemp))
+    try? cleanCSV(inputPath: batteryPath, outputPath: batteryTemp)
+    try? cleanCSV(inputPath: screenPath, outputPath: screenTemp)
 
-// Archive new copies
-let dateSuffix = todayString
-let batteryArchive = "\(logDir)/battery_log_\(dateSuffix).csv"
-let keyArchive = "\(logDir)/key_frequency_\(dateSuffix).json"
-let screenArchive = "\(logDir)/screen_log_\(dateSuffix).csv"
+    // Atomically replace originals
+    _ = try? fileManager.replaceItemAt(URL(fileURLWithPath: batteryPath),
+                                    withItemAt: URL(fileURLWithPath: batteryTemp))
+    _ = try? fileManager.replaceItemAt(URL(fileURLWithPath: screenPath),
+                                    withItemAt: URL(fileURLWithPath: screenTemp))
 
-try? fileManager.copyItem(atPath: batteryPath, toPath: batteryArchive)
-try? fileManager.copyItem(atPath: keyFreqPath, toPath: keyArchive)
-try? fileManager.copyItem(atPath: screenPath, toPath: screenArchive)
+    // Archive new copies
+    let dateSuffix = todayString
+    let batteryArchive = "\(logDir)/battery_log_\(dateSuffix).csv"
+    let keyArchive = "\(logDir)/key_frequency_\(dateSuffix).json"
+    let screenArchive = "\(logDir)/screen_log_\(dateSuffix).csv"
 
-// Delete older CSV archives (keep JSON)
-if let files = try? fileManager.contentsOfDirectory(atPath: logDir) {
-    for f in files where (f.hasPrefix("battery_log_") || f.hasPrefix("screen_log_")) && !f.contains(dateSuffix) {
-        try? fileManager.removeItem(atPath: "\(logDir)/\(f)")
+    try? fileManager.copyItem(atPath: batteryPath, toPath: batteryArchive)
+    try? fileManager.copyItem(atPath: keyFreqPath, toPath: keyArchive)
+    try? fileManager.copyItem(atPath: screenPath, toPath: screenArchive)
+
+    // Delete older CSV archives (keep JSON)
+    if let files = try? fileManager.contentsOfDirectory(atPath: logDir) {
+        for f in files where (f.hasPrefix("battery_log_") || f.hasPrefix("screen_log_")) && !f.contains(dateSuffix) {
+            try? fileManager.removeItem(atPath: "\(logDir)/\(f)")
+        }
     }
+
+    // Record last run date (full date string)
+    try? todayString.write(toFile: lastRunFile, atomically: true, encoding: .utf8)
+
+    log("Maintenance complete for \(todayString)")
+} catch {
+    fputs("Maintenance failed to acquire lock: \(error)\n", stderr)
+    exit(1)
 }
-
-// Record last run date (full date string)
-try? todayString.write(toFile: lastRunFile, atomically: true, encoding: .utf8)
-
-log("Maintenance complete for \(todayString)")
