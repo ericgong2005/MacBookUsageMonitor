@@ -67,29 +67,13 @@ func isUpdateDay() -> Bool {
     let df = DateFormatter()
     df.dateFormat = "yyyy-MM-dd"
 
-    var lastRunDate: Date? = nil
     if let lastStr = try? String(contentsOfFile: lastRunFile, encoding: .utf8)
         .trimmingCharacters(in: .whitespacesAndNewlines),
-       let d = df.date(from: lastStr) {
-        lastRunDate = d
+       let lastRun = df.date(from: lastStr) {
+        return !Calendar.current.isDate(lastRun, inSameDayAs: todayDate)
     }
 
-    // If today is a multiple of 5, only run if we haven't run today yet
-    if day % 5 == 0 {
-        if let last = lastRunDate, Calendar.current.isDate(last, inSameDayAs: todayDate) {
-            return false
-        }
-        return true
-    }
-
-    // Otherwise, run if last run was more 5 days ago (catch-up)
-    guard let last = lastRunDate else { return true }
-    if let diff = Calendar.current.dateComponents([.day], from: last, to: todayDate).day,
-       diff >= 5 {
-        return true
-    }
-
-    return false
+    return true
 }
 
 // Wait if file was updated recently (avoid overlap with 10-min logger)
@@ -110,44 +94,157 @@ func waitIfRecentlyUpdated(filePath: String) {
     }
 }
 
-// Clean CSV by removing middle duplicates
-func cleanCSV(inputPath: String, outputPath: String) throws {
-    let contents = try String(contentsOfFile: inputPath, encoding: .utf8)
-    let lines = contents.split(separator: "\n").map(String.init)
-    guard !lines.isEmpty else { return }
+// Clean CSV files
+@inline(__always)
+func regexReplace(_ text: String, pattern: String, template: String,
+                  options: NSRegularExpression.Options = []) -> String {
+    guard let re = try? NSRegularExpression(pattern: pattern, options: options) else { return text }
+    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+    return re.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
+}
 
-    let header = lines.first!
-    var result = [header]
-    var prevRest = ""
-    var group = [String]()
+let iso = ISO8601DateFormatter()
+
+// --- Battery cleaner ---
+// Fix joined lines after true/false; then collapse consecutive duplicates keeping the most recent.
+func cleanBatteryCSV(inputPath: String, outputPath: String) throws {
+    var content = try String(contentsOfFile: inputPath, encoding: .utf8)
+
+    // 1) Fix bad rows where AC ("true"/"false") is glued to the next ISO timestamp.
+    content = regexReplace(
+        content,
+        pattern: #"(?i)\b(true|false)(?=(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z))"#,
+        template: "$1\n"
+    )
+
+    // 2) Stream once, keeping only the last row in any consecutive block where
+    //    (Max,Charge,Cycles,AC) are identical.
+    let lines = content.split(whereSeparator: \.isNewline).map(String.init)
+    guard !lines.isEmpty else {
+        try "".write(toFile: outputPath, atomically: true, encoding: .utf8)
+        return
+    }
+
+    let header = lines.first!   // Expect "Time,Max,Charge,Cycles,AC"
+    var result: [String] = [header]
+    var lastRest: String? = nil
 
     for line in lines.dropFirst() {
         let comps = line.split(separator: ",", omittingEmptySubsequences: false)
-        guard comps.count > 1 else { continue }
-        let rest = comps.dropFirst().joined(separator: ",")
+        guard comps.count == 5 else { continue }
 
-        if rest == prevRest {
-            group.append(line)
+        let rest = comps.dropFirst().joined(separator: ",")
+        if rest == lastRest {
+            result.removeLast()
+            result.append(line)
         } else {
-            if group.count > 1 {
-                result.append(group.first!)
-                result.append(group.last!)
-            } else if let single = group.first {
-                result.append(single)
-            }
-            group = [line]
-            prevRest = rest
+            result.append(line)
+            lastRest = rest
         }
     }
 
-    if group.count > 1 {
-        result.append(group.first!)
-        result.append(group.last!)
-    } else if let single = group.first {
-        result.append(single)
+    try result.joined(separator: "\n").appending("\n")
+        .write(toFile: outputPath, atomically: true, encoding: .utf8)
+}
+
+// --- Screen cleaner ---
+// Fix joined rows; keep ScreenOn only when directly between two ScreenUnlocked entries;
+// collapse consecutive ScreenOn (keep most recent); drop Lock-Unlock pairs < 30s.
+func cleanScreenCSV(inputPath: String, outputPath: String) throws {
+    var content = try String(contentsOfFile: inputPath, encoding: .utf8)
+
+    // 1) Fix bad rows where an event name is glued to the next timestamp.
+    let eventNames = #"ScriptStarted|ScreenOn|ScreenLocked|ScreenUnlocked"#
+    content = regexReplace(
+        content,
+        pattern: #"(?:"# + eventNames + #")(?=(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z))"#,
+        template: "$0\n"
+    )
+
+    let lines = content.split(whereSeparator: \.isNewline).map(String.init)
+    guard !lines.isEmpty else {
+        try "".write(toFile: outputPath, atomically: true, encoding: .utf8)
+        return
     }
 
-    try result.joined(separator: "\n")
+    // Parse lines to (date,event); skip malformed
+    struct Evt { let t: Date; let e: String }
+    var events: [Evt] = []
+    let header = lines.first!   // Expect "Time,Event"
+    for line in lines.dropFirst() {
+        let comps = line.split(separator: ",", omittingEmptySubsequences: false)
+        guard comps.count == 2 else { continue }
+        let tStr = String(comps[0])
+        let eStr = String(comps[1])
+        guard let t = iso.date(from: tStr) else { continue }
+        events.append(Evt(t: t, e: eStr))
+    }
+
+    // Single-pass build with small lookahead via a "pending ScreenOn"
+    var out: [Evt] = []
+    var isUnlocked = false
+    var pendingOn: Evt? = nil
+
+    @inline(__always)
+    func flushPendingOnBetweenUnlocks() {
+        // Append the pending ScreenOn (already the most recent due to overwrites)
+        if let p = pendingOn {
+            if let last = out.last, last.e == "ScreenOn" {
+                // Replace prior ScreenOn if somehow present (shouldn't usually happen)
+                _ = out.popLast()
+            }
+            out.append(p)
+            pendingOn = nil
+        }
+    }
+
+    for ev in events {
+        switch ev.e {
+        case "ScriptStarted":
+            out.append(ev)
+
+        case "ScreenOn":
+            if isUnlocked {
+                pendingOn = ev
+            }
+        case "ScreenUnlocked":
+            // If the previous kept event is 'ScreenLocked' and gap < 30s, drop the pair.
+            if let last = out.last, last.e == "ScreenLocked" {
+                if ev.t.timeIntervalSince(last.t) < 30 {
+                    _ = out.popLast() // remove ScreenLocked
+                    continue
+                }
+            }
+
+            // If we were already unlocked and we now see another unlock,
+            // a pending ScreenOn is *directly between two unlocks* — keep it.
+            if isUnlocked { flushPendingOnBetweenUnlocks() }
+
+            out.append(ev)
+            isUnlocked = true
+
+        case "ScreenLocked":
+            // Lock closes the window; pending 'ScreenOn' was not between two unlocks, drop it.
+            pendingOn = nil
+            out.append(ev)
+            isUnlocked = false
+
+        default:
+            // Unknown events: treat like a barrier and keep them; drop pending ScreenOn.
+            pendingOn = nil
+            out.append(ev)
+        }
+    }
+
+    // End: if pendingOn remains, it's not between two unlocks -> drop.
+
+    // Now serialize
+    var result: [String] = [header]
+    for ev in out {
+        result.append("\(iso.string(from: ev.t)),\(ev.e)")
+    }
+
+    try result.joined(separator: "\n").appending("\n")
         .write(toFile: outputPath, atomically: true, encoding: .utf8)
 }
 
@@ -175,8 +272,8 @@ do {
     let batteryTemp = "\(logDir)/battery_clean.csv"
     let screenTemp = "\(logDir)/screen_clean.csv"
 
-    try? cleanCSV(inputPath: batteryPath, outputPath: batteryTemp)
-    try? cleanCSV(inputPath: screenPath, outputPath: screenTemp)
+    try? cleanBatteryCSV(inputPath: batteryPath, outputPath: batteryTemp)
+    try? cleanScreenCSV(inputPath: screenPath, outputPath: screenTemp)
 
     // Atomically replace originals
     _ = try? fileManager.replaceItemAt(URL(fileURLWithPath: batteryPath),
