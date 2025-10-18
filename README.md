@@ -1,7 +1,43 @@
 # MacBook Usage Monitor
 
+## Design
+
+The project is composed of two main parts: A UsageMonitor and a UsageMonitorApp. 
+
+The UsageMonitor should subscribe to system events, or periodically check for:
+- When the Battery Percentage changes
+- When the user begins charging their computer
+- When the user locks or unlocks the device
+- When the Charge Cycle increments
+- When the battery health decreases
+- The keys that are being pressed at any given moment (The user will first give accessibility and input monitoring permissions)
+
+The UsageMonitor should batch writes to an underlying file, or multiple files that will track this information.
+
+One file should contain Entry Time, Battery Percent, Power Source (Charger or Battery): BatteryCharge.csv
+
+One file should contain Entry Time, Screen state (Lock or Unlock): ScreenState.csv
+
+One file should contain Entry Time, Battery Health, Charge Cycle Count: BatteryHealth.csv
+
+A new entry should be appended to the file every time any of the fields (other than Entry time) change (ie: if the computer is locked, if the charger is plugged in, if the battery percent increases or decreases, etc.)
+
+One file should contain a mapping from Macbook Key codes to number of presses for that key: KeyFrequency.json
+
+This file should be updated continuously as keys are pressed, and a snapshot of it should be saved sometime every day.
+
+For all files, writes can be batched as needed to increases efficiency.
+
+However, shutdown handling should be graceful, and the code should reduce the number of entries lost. In addition, the code should be able to add a Use State Lock entry right before shutting down, and an Unlock entry when the code first starts up again after a shutdown.
+
+Hence, the code should be a script that is executed via launchagents and is kept alive while the macbook is on. 
+
+The UsageMonitor app should display all collected information, including the extensive battery logs. This will require it to read in the file every time the app is started, either by directly reading the file, or by requesting the UsageMonitor, if UsageMonitor exposes an interface. The only process writing to the files should be UsageMonitor, the App should only read, but concurrency issues should be avoided by design.
+
+
+
 ## Motivation
-The purpose of this code is to Allow one to track various hardward utilization metrics for their MacBook. In particular, this code tracks screen time by logging all sleep/wake and screen lock/unlock events. In addition it tracks battery usage by periodically logging the current battery percentage, the battery health, the current number of charge cycles, and whether the MacBook is currently charging. Finally, the code also tracks keystrokes, storing the frequency of usage for each key.
+The purpose of this code is to allow one to track various hardward utilization metrics for their MacBook. In particular, this code tracks screen time by logging all sleep/wake and screen lock/unlock events. In addition it tracks battery usage by periodically logging the current battery percentage, the battery health, the current number of charge cycles, and whether the MacBook is currently charging. Finally, the code also tracks keystrokes, storing the frequency of usage for each key.
 
 In particular, battery usage metrics are queried once every minute, while keystrokes and screen activity are monitored on event, with a default screen log every 5 minutes. The results are written to files every 10 minutes, or whenever the code is terminated, or when the MacBook is put to sleep.
 
@@ -24,4 +60,4 @@ In particular, battery usage metrics are queried once every minute, while keystr
 
 
 ## DISCLAIMER: 
-WHEN INSTALLED AND GIVEN NECESSARY PERMISSIONS, THIS CODE WILL TRACK USAGE STATISTICS INCLUDING, BUT NOT LIMITED TO, ALL USER KEYSTROKES. THIS DATA IS CURRENTLY USED TO CALCULATE KEY USAGE FREQUENCIES, IT COULD BE CONVERTED INTO A FULL KEYSTROKE LOGGER. THE AUTHOR OF THIS CODE DOES NOT CONDONE ANY SUCH USAGE, AND SHALL NOT BE RESPONSIBLE FOR ANY HARMS RESULTING FROM THE USE OF THIS CODE OR ANY WORK DERIVED FROM THIS CODE.
+WHEN INSTALLED AND GIVEN NECESSARY PERMISSIONS, THIS CODE WILL TRACK USAGE STATISTICS INCLUDING, BUT NOT LIMITED TO, ALL USER KEYSTROKES. THIS DATA IS CURRENTLY USED TO CALCULATE KEY USAGE FREQUENCIES, BUT IT COULD BE CONVERTED INTO A FULL KEYSTROKE LOGGER. THE AUTHOR OF THIS CODE DOES NOT CONDONE ANY SUCH USAGE, AND SHALL NOT BE RESPONSIBLE FOR ANY HARMS RESULTING FROM THE USE OF THIS CODE OR ANY WORK DERIVED FROM THIS CODE.
