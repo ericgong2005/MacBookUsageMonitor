@@ -4,6 +4,143 @@ import IOKit.ps
 import IOKit
 import os.log
 
+// MARK: - Byte helpers (native endianness, no padding)
+extension Data {
+    /// Append a fixed-width integer in native endianness.
+    mutating func appendInteger<T: FixedWidthInteger>(_ value: T) {
+        var v = value // must be var to take an address
+        withUnsafeBytes(of: &v) { append($0) }
+    }
+
+    /// Read a fixed-width integer from `offset` in native endianness (safe for unaligned offsets).
+    func readInteger<T: FixedWidthInteger>(at offset: Int, as: T.Type = T.self) -> T {
+        precondition(offset + MemoryLayout<T>.size <= count, "Out of bounds read")
+        var value = T.zero
+        withUnsafeMutableBytes(of: &value) { dst in
+            copyBytes(to: dst, from: offset..<(offset + MemoryLayout<T>.size))
+        }
+        return value
+    }
+}
+
+// MARK: - Fixed-size record
+struct Record: Equatable, CustomStringConvertible {
+    var id: UInt32          // 4 bytes
+    var status: UInt8       // 1
+    var quality: UInt8      // 1
+    var version: UInt16     // 2
+    var counter: UInt32     // 4
+    var checksum: UInt64    // 8
+    // total = 20 bytes (no padding in file; we pack fields ourselves)
+
+    static let byteSize =
+        MemoryLayout<UInt32>.size +  // id
+        MemoryLayout<UInt8>.size  +  // status
+        MemoryLayout<UInt8>.size  +  // quality
+        MemoryLayout<UInt16>.size +  // version
+        MemoryLayout<UInt32>.size +  // counter
+        MemoryLayout<UInt64>.size    // checksum
+
+    // Encode into a Data buffer (native endianness).
+    func encode(into data: inout Data) {
+        data.appendInteger(id)
+        data.appendInteger(status)
+        data.appendInteger(quality)
+        data.appendInteger(version)
+        data.appendInteger(counter)
+        data.appendInteger(checksum)
+    }
+
+    // Decode from Data at a byte offset.
+    static func decode(from data: Data, at offset: Int) -> Record? {
+        guard offset + byteSize <= data.count else { return nil }
+        var i = offset
+        let id: UInt32      = data.readInteger(at: i);                  i += 4
+        let status: UInt8   = data.readInteger(at: i);                  i += 1
+        let quality: UInt8  = data.readInteger(at: i);                  i += 1
+        let version: UInt16 = data.readInteger(at: i);                  i += 2
+        let counter: UInt32 = data.readInteger(at: i);                  i += 4
+        let checksum: UInt64 = data.readInteger(at: i);                 i += 8
+        return Record(id: id, status: status, quality: quality,
+                      version: version, counter: counter, checksum: checksum)
+    }
+
+    var description: String {
+        "Record(id:\(id), status:\(status), quality:\(quality), version:\(version), counter:\(counter), checksum:\(checksum))"
+    }
+}
+
+// MARK: - File IO
+enum RecordFileError: Error {
+    case corruptFile
+    case indexOutOfBounds
+}
+
+func save(_ records: [Record], to url: URL) throws {
+    var blob = Data(capacity: records.count * Record.byteSize)
+    for r in records { r.encode(into: &blob) }
+    try blob.write(to: url, options: .atomic)
+}
+
+func loadAll(from url: URL) throws -> [Record] {
+    let data = try Data(contentsOf: url)
+    guard data.count % Record.byteSize == 0 else { throw RecordFileError.corruptFile }
+    var out: [Record] = []
+    out.reserveCapacity(data.count / Record.byteSize)
+    var offset = 0
+    while offset < data.count {
+        guard let rec = Record.decode(from: data, at: offset) else { throw RecordFileError.corruptFile }
+        out.append(rec)
+        offset += Record.byteSize
+    }
+    return out
+}
+
+/// Random-access: extract a single record at `index` without loading the whole file.
+func loadRecord(at index: Int, from url: URL) throws -> Record {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+
+    // Verify file length aligns to record size (optional but safer)
+    let size = try handle.seekToEnd()
+    guard size % UInt64(Record.byteSize) == 0 else { throw RecordFileError.corruptFile }
+
+    let count = Int(size) / Record.byteSize
+    guard index >= 0 && index < count else { throw RecordFileError.indexOutOfBounds }
+
+    let offset = UInt64(index * Record.byteSize)
+    try handle.seek(toOffset: offset)
+    let chunk = try handle.read(upToCount: Record.byteSize) ?? Data()
+    guard chunk.count == Record.byteSize, let rec = Record.decode(from: chunk, at: 0) else {
+        throw RecordFileError.corruptFile
+    }
+    return rec
+}
+
+// MARK: - Example usage
+do {
+    let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("records.bin")
+
+    let records: [Record] = [
+        .init(id: 1, status: 3, quality: 90, version: 1, counter: 10, checksum: 0xDEADBEEF00112233),
+        .init(id: 2, status: 2, quality: 80, version: 1, counter: 20, checksum: 0xABCDEF1234567890),
+        .init(id: 3, status: 1, quality: 70, version: 2, counter: 30, checksum: 0x0102030405060708),
+    ]
+
+    try save(records, to: tmpURL)
+
+    // Load a single entry by index (e.g., the third record)
+    let third = try loadRecord(at: 2, from: tmpURL)
+    print("Loaded single record:", third)
+
+    // Or load all back
+    let roundTrip = try loadAll(from: tmpURL)
+    print("Loaded \(roundTrip.count) records")
+} catch {
+    print("Error:", error)
+}
+
+
 // =======================================
 // File definition (and directory) at top
 // =======================================
@@ -20,7 +157,7 @@ let stateLogURL = baseDir.appendingPathComponent("state_log.csv")
 enum ScreenState: Int, CustomStringConvertible {
     case unlocked = 0
     case locked   = 1
-    var description: String { String(rawValue) }          // prints 0/1 in CSV
+    var description: String { String(rawValue) }  
     var label: String { self == .locked ? "Lock" : "Unlock" }
 }
 

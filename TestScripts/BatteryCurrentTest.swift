@@ -1,23 +1,27 @@
 #!/usr/bin/swift
 
 import Foundation
+import IOKit
 import IOKit.ps
 
-let snapshot = IOPSCopyPowerSourcesInfo().takeRetainedValue()
+func readSmartBatteryDict() -> [String: Any]? {
+    let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+    guard service != 0 else { return nil }
+    defer { IOObjectRelease(service) }
 
-let sources = IOPSCopyPowerSourcesList(snapshot).takeRetainedValue() as [CFTypeRef]
-
-// Find the internal battery and read kIOPSCurrentKey
-for ps in sources {
-    guard
-        let desc = IOPSGetPowerSourceDescription(snapshot, ps).takeUnretainedValue() as? [String: Any],
-        let type = desc[kIOPSTypeKey as String] as? String,
-        type == (kIOPSInternalBatteryType as String)
-    else { continue }
-
-    if let num = desc[kIOPSIsChargingKey] {
-        print("\(num)")
-    } else {
-        print("Battery current not available (kIOPSCurrentKey missing).")
-    }
+    var props: Unmanaged<CFMutableDictionary>?
+    guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+          let dict = props?.takeRetainedValue() as? [String: Any] else { return nil }
+    return dict
 }
+
+// Option A: unwrap explicitly
+if let d = readSmartBatteryDict() {
+    print(d)
+} else {
+    print("Smart battery dictionary unavailable")
+}
+
+// Option B: if you prefer a default empty dict
+// let d = readSmartBatteryDict() ?? [:]
+// print(d)

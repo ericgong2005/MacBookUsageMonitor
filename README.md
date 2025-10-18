@@ -4,6 +4,24 @@
 
 The project is composed of two main parts: A UsageMonitor and a UsageMonitorApp. 
 
+
+Battery Stats to keep track of:
+Short term: Trigger on battery percent change
+- Current battery percentage ("CurrentCapacity", 0-2e7) and per-cell discharge ("PresentDOD", 3-tuple of 0-2e7)
+- Current battery voltage ("Voltage", 0-2e15) and per-cell voltage (CellVoltage, 3-tuple of 0-2e13)
+- Current battery capacity ("AppleRawCurrentCapacity", 0-2e13)
+- Amperage ("Amperage" -2e13-2e13)
+
+Long term: Trigger on IsCharging
+- Is charging ("IsCharging" / "ExternalConnected", 0-1)
+- Cycle Count ("CycleCount", 0-2e14)
+- Current Maximum Capacity ("AppleRawMaxCapacity", 0-2e13)
+- Resistance ("WeightedRa", 3-tuple of 0-2^8)
+- per-cell capacity ("Qmax", 3-tuple of 0-2e13)
+
+Constant: read when needed
+- Design Capacity (constant "DesignCapacity", 0-2e13)
+
 The UsageMonitor should subscribe to system events, or periodically check for:
 - When the Battery Percentage changes
 - When the user begins charging their computer
