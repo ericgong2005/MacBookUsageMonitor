@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "UsageMonitorUtilities",
     platforms: [
-        .iOS(.v13), .macOS(.v10.15), .tvOS(.v13), .watchOS(.v6)
+        .iOS(.v13), .macOS(.v13), .tvOS(.v13), .watchOS(.v6)
     ],
     products: [
         .library(name: "UsageMonitorUtilities", targets: ["UsageMonitorUtilities"])

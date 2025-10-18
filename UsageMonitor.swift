@@ -10,6 +10,7 @@ import UsageMonitorUtilities
 
 // UsageMonitor Files
 let DIRECTORY = URL(fileURLWithPath: "/Users/Ericgong/Library/UsageMonitor")
+let BACKUPDIRECTORY = DIRECTORY.appendingPathComponent("BackupLogs") 
 
 let BatteryChargeLog = DIRECTORY.appendingPathComponent("BatteryChargeLog") 
 let BatteryHealthLog = DIRECTORY.appendingPathComponent("BatteryHealthLog")
@@ -49,12 +50,13 @@ func CreateFiles() {
 var CurrentBatteryChargeEntry: BatteryChargeEntry? = nil
 var CurrentBatteryHealthEntry: BatteryHealthEntry? = nil
 var CurrentScreenStateEntry: ScreenStateEntry? = nil
-var CurrentKeyFrequency: [String:Int]? = nil 
+var CurrentKeyFrequency: [String:Int] = [:] 
+var KeyPressCounter: Int = 0
 
-var LastLogTime: UInt32? = nil
-var LastBackUpTime: UInt32? = nil
+var LastLogTime: UInt32 = 0
+var LastBackUpTime: UInt32 = 0
 
-func ReadFileValues() {
+func InitializeFileValues() {
     CurrentKeyFrequency = (try? JSONSerialization.jsonObject(with: Data(contentsOf: KeyFrequencyLog)) as? [String:Int]) ?? [:]
 
     do {
@@ -63,7 +65,7 @@ func ReadFileValues() {
             LastBackUpTime = data.readInteger(at: data.count - 4, as: UInt32.self)
         }
     } catch {
-        LastBackUpTime = nil
+        LastBackUpTime = 0
     }
 
     do {
@@ -72,11 +74,9 @@ func ReadFileValues() {
             LastLogTime = data.readInteger(at: data.count - 4, as: UInt32.self)
         }
     } catch {
-        LastLogTime = nil
         return
     }
 
-    guard let LastLogTime else { return }  
     let elapsed = now() - LastLogTime
     if elapsed > 600 {
         do {
@@ -101,23 +101,90 @@ func ReadFileValues() {
             ScreenStateEntry(EntryTime: LastLogTime, ScreenState: .locked).encode(into: &toAppend)
             CurrentScreenStateEntry = ScreenStateEntry(EntryTime: now(), ScreenState: .unlocked)
             CurrentScreenStateEntry.encode(into: &toAppend)
-            if let wh = try? FileHandle(forWritingTo: ScreenStateLog) {
-                do {
-                    try wh.seekToEnd()
-                    try wh.write(contentsOf: toAppend)
-                } catch {
-                    return 
-                }
-                try? wh.close()
-            }
+            AtomicAppend(toAppend, to: ScreenStateLog)
+            AtomicTimeUpdate(at: LastLogTimeFile)
         } 
     }
     return
 }
 
+func StartKeyMonitor() {
+    let mask: CGEventMask =
+        (CGEventMask(1) << CGEventMask(CGEventType.keyDown.rawValue)) |
+        (CGEventMask(1) << CGEventMask(CGEventType.flagsChanged.rawValue))
+
+    guard let tap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap,
+        place: .headInsertEventTap,
+        options: .defaultTap,
+        eventsOfInterest: mask,
+        callback: { _, t, e, _ in
+            if t == .keyDown || t == .flagsChanged {
+                let code = UInt16(truncatingIfNeeded: e.getIntegerValueField(.keyboardEventKeycode))
+                CurrentKeyFrequency[String(code), default: 0] += 1
+                KeyPressCounter += 1
+            }
+            return Unmanaged.passUnretained(e)
+        },
+        userInfo: nil
+    ) else {
+        print("Need Accessibility permission")
+        return
+    }
+
+    let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
+    CGEvent.tapEnable(tap: tap, enable: true)
+}
+
+func LogKeyFrequency() {
+    if KeyPressCounter > 0 {
+        do {
+            if let data = try JSONSerialization.data(withJSONObject: CurrentKeyFrequency, options: [.prettyPrinted, .sortedKeys]) {
+                try data.write(to: KeyFrequencyLog, options: .atomic)
+            }
+            AtomicTimeUpdate(at: LastLogTimeFile)
+            KeyPressCounter = 0
+        } catch {
+            print("Log Key Failed at \(NowString())")
+            return
+        }
+    }
+}
+
+func LogScreenState(ScreenState: ScreenStateEnum) {
+    var toAppend = Data()
+    CurrentScreenStateEntry = ScreenStateEntry(EntryTime: now(), ScreenState: ScreenState)
+    CurrentScreenStateEntry.encode(into: &toAppend)
+    AtomicAppend(toAppend, to: ScreenStateLog)
+    AtomicTimeUpdate(at: LastLogTimeFile)
+}
+
+func LogBatteryState() {
+    let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+    guard service != 0 else { return }
+    defer { IOObjectRelease(service) }
+
+    var props: Unmanaged<CFMutableDictionary>?
+    guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+        let dict = props?.takeRetainedValue() as? [String: Any] else { return }
+}
+
 // Main Code
 CreateFiles()
-ReadFileValues()
+InitializeFileValues()
 
+StartKeyMonitor()
+
+// Screen State writes happen immediately upon the event
+DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: nil) { _ in
+    LogScreenState(.locked)
+}
+DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: nil) { _ in
+    LogScreenState(.unlocked)
+}
+
+// Log Keystroke Frequencies and Battery every minute
+Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in LogKeyFrequency() }
 
 
