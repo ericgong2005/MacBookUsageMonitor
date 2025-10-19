@@ -5,7 +5,7 @@
 The project is composed of two main parts: A UsageMonitor and a UsageMonitorApp. 
 
 
-Battery Stats to keep track of:
+Battery Stats to keep track of: (To nearest Int8, Int16, Int32)
 Short term: Trigger on battery percent change
 - Current battery percentage ("CurrentCapacity", 0-2e7) and per-cell discharge ("PresentDOD", 3-tuple of 0-2e7)
 - Current battery voltage ("Voltage", 0-2e15) and per-cell voltage (CellVoltage, 3-tuple of 0-2e13)
