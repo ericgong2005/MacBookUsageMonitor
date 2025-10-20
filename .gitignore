@@ -1,22 +1,8 @@
-# Xcode user state
-xcuserdata/
-**/*.xcuserstate
-*.pbxuser
-*.mode1v3
-*.mode2v3
-*.perspectivev3
-
-# Build/derived artifacts
-build/
-DerivedData/
-
-# Workspace and SCM metadata noise
-*.xcscmblueprint
-*.xccheckout
-
-# Swift Package Manager
-.build/
-.swiftpm/xcode/package.xcworkspace/xcuserdata/
-
-# macOS
 .DS_Store
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
