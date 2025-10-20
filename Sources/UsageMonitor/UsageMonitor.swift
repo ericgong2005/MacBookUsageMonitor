@@ -9,7 +9,6 @@ import UsageMonitorUtilities
 @MainActor
 @main
 struct UsageMonitor {
-    // UsageMonitor Files
     static let DIRECTORY = URL(fileURLWithPath: "/Users/Ericgong/Library/UsageMonitor")
     static let BACKUPDIRECTORY = DIRECTORY.appendingPathComponent("BackupLogs")
 
@@ -288,13 +287,12 @@ struct UsageMonitor {
         if !FileManager.default.fileExists(atPath: chargeBackup.path) {
             _ = clonefile(BatteryChargeLog.path, chargeBackup.path, 0)
         }
-
+        
         let healthBackup = BACKUPDIRECTORY.appendingPathComponent("BatteryHealthLog_\(dateString)")
         if !FileManager.default.fileExists(atPath: healthBackup.path) {
             _ = clonefile(BatteryHealthLog.path, healthBackup.path, 0)
         }
 
-        // ScreenStateLog (one per day)
         let screenBackup = BACKUPDIRECTORY.appendingPathComponent("ScreenStateLog_\(dateString)")
         if !FileManager.default.fileExists(atPath: screenBackup.path) {
             _ = clonefile(ScreenStateLog.path, screenBackup.path, 0)
@@ -303,6 +301,15 @@ struct UsageMonitor {
         let KeyFrequencyBackup = BACKUPDIRECTORY.appendingPathComponent("KeyFrequencyLog_\(dateString).json")
         if !FileManager.default.fileExists(atPath: KeyFrequencyBackup.path) {
             _ = clonefile(KeyFrequencyLog.path, KeyFrequencyBackup.path, 0)
+        }
+        
+        let fm = FileManager.default
+        let dirPath = BACKUPDIRECTORY.path
+        
+        if let files = try? fm.contentsOfDirectory(atPath: dirPath) {
+            for f in files where (f.hasPrefix("BatteryChargeLog_") || f.hasPrefix("BatteryHealthLog_") || f.hasPrefix("ScreenStateLog_")) && !f.contains(dateString) {
+                try? fm.removeItem(atPath: "\(dirPath)/\(f)")
+            }
         }
 
         _ = AtomicTimeUpdate(at: LastBackUpTimeFile)
