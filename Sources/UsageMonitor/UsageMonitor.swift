@@ -333,7 +333,7 @@ struct UsageMonitor {
         }
 
         // Log Keystroke Frequencies
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in Task { @MainActor in LogKeyFrequency()} }
+        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in Task { @MainActor in LogKeyFrequency()} }
         
         // Check Battery every minute
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in Task { @MainActor in LogBatteryState()} }
